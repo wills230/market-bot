@@ -1,13 +1,18 @@
 import requests
 import time
-import json
 from datetime import datetime, timedelta
+import pytz
+
+EASTERN = pytz.timezone("US/Eastern")
+
+def now_et():
+    return datetime.now(EASTERN)
 
 # ============================================================
 #  PASTE YOUR KEYS HERE — these are the only lines you touch
 # ============================================================
-POLYGON_API_KEY = "PASTE_YOUR_POLYGON_KEY_HERE"
-NTFY_CHANNEL    = "PASTE_YOUR_NTFY_CHANNEL_NAME_HERE"
+POLYGON_API_KEY = "bwmQrJUN3aF_2lL0iOSPsyObJNpLIZkX"
+NTFY_CHANNEL    = "my-market-alerts"
 # ============================================================
 
 POLYGON_BASE = "https://api.polygon.io"
@@ -17,13 +22,17 @@ NTFY_BASE    = "https://ntfy.sh"
 WATCHLIST = [
     "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
     "JPM","GS","BAC","XOM","CVX","LLY","UNH","BA",
-    "AMD","MRNA","PFE","NFLX","V"
+    "AMD","MRNA","PFE","NFLX","V","CRM","ORCL","QCOM","MU",
+    "BIIB","GILD","ABBV","REGN",
+    "MS","WFC","C","BLK",
+    "LMT","RTX","NOC","GD",
+    "PLTR","COIN"
 ]
 
 VOLUME_SPIKE_MULTIPLIER = 2.5
 PRICE_SPIKE_PERCENT     = 3.0
 
-daily_alerts = []
+daily_alerts     = []
 recap_sent_today = False
 
 
@@ -41,7 +50,7 @@ def send_alert(title, message, priority="default"):
         )
         print(f"[ALERT SENT] {title}")
         daily_alerts.append({
-            "time":  datetime.now().strftime("%I:%M %p"),
+            "time":  now_et().strftime("%I:%M %p"),
             "title": title
         })
     except Exception as e:
@@ -108,7 +117,7 @@ def check_volume_and_price(ticker):
             f"Change: {snap['change_pct']:+.2f}%\n"
             f"Volume: {int(snap['volume']):,} ({vol_ratio:.1f}x avg)\n"
             f"Signals: {', '.join(signals)}\n"
-            f"Time: {datetime.now().strftime('%I:%M %p')}"
+            f"Time: {now_et().strftime('%I:%M %p ET')}"
         )
         priority = "urgent" if len(signals) >= 2 else "high"
         send_alert(title, message, priority)
@@ -116,7 +125,7 @@ def check_volume_and_price(ticker):
 
 def check_sec_form4():
     try:
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = now_et().strftime("%Y-%m-%d")
         url   = f"{EDGAR_BASE}/LATEST/search-index?q=%22form+4%22&dateRange=custom&startdt={today}&enddt={today}&forms=4"
         r     = requests.get(url, headers={"User-Agent": "MarketBot contact@example.com"}, timeout=15)
         data  = r.json()
@@ -132,7 +141,7 @@ def check_sec_form4():
                 if ticker.lower() in entity_name.lower():
                     send_alert(
                         f"FORM 4 FILED: {ticker} insider activity",
-                        f"New SEC Form 4 filing detected\nCompany: {entity_name}\nFiled: {filed_at}\nView: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4\nTime: {datetime.now().strftime('%I:%M %p')}",
+                        f"New SEC Form 4 filing detected\nCompany: {entity_name}\nFiled: {filed_at}\nView: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4\nTime: {now_et().strftime('%I:%M %p ET')}",
                         priority="high"
                     )
     except Exception as e:
@@ -144,11 +153,11 @@ def check_congress_trades():
         url    = "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
         r      = requests.get(url, timeout=15)
         trades = r.json()
-        cutoff  = datetime.now() - timedelta(days=7)
+        cutoff  = now_et() - timedelta(days=7)
         alerted = set()
         for t in trades:
             try:
-                date = datetime.strptime(t.get("transaction_date", ""), "%Y-%m-%d")
+                date = EASTERN.localize(datetime.strptime(t.get("transaction_date", ""), "%Y-%m-%d"))
                 if date < cutoff:
                     continue
             except:
@@ -166,9 +175,8 @@ def check_congress_trades():
 
 
 def run_scan():
-    now = datetime.now().strftime("%I:%M %p")
-    print(f"\n{'='*50}\n  SCAN — {now}\n{'='*50}")
-    print("[1/3] Volume & price spikes...")
+    print(f"\n{'='*50}\n  SCAN — {now_et().strftime('%I:%M %p ET')}\n{'='*50}")
+    print(f"[1/3] Volume & price spikes ({len(WATCHLIST)} tickers)...")
     for ticker in WATCHLIST:
         check_volume_and_price(ticker)
         time.sleep(0.5)
@@ -180,21 +188,19 @@ def run_scan():
 
 
 def is_market_hours():
-    now     = datetime.now()
+    now     = now_et()
     weekday = now.weekday()
-    hour    = now.hour
-    minute  = now.minute
     if weekday >= 5:
         return False
-    if hour < 9 or (hour == 9 and minute < 30):
+    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
         return False
-    if hour >= 16:
+    if now.hour >= 16:
         return False
     return True
 
 
 def is_recap_time():
-    now = datetime.now()
+    now = now_et()
     return now.hour == 15 and now.minute >= 55
 
 
@@ -206,7 +212,7 @@ if __name__ == "__main__":
 
     send_alert(
         "Market Bot Online",
-        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap will arrive at 3:55pm ET.",
+        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap at 3:55pm ET.",
         priority="default"
     )
 
@@ -223,5 +229,5 @@ if __name__ == "__main__":
                 time.sleep(60 * 15)
         else:
             recap_sent_today = False
-            print(f"[{datetime.now().strftime('%I:%M %p')}] Market closed — waiting...")
+            print(f"[{now_et().strftime('%I:%M %p ET')}] Market closed — waiting...")
             time.sleep(60 * 30)
