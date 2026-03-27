@@ -11,8 +11,8 @@ def now_et():
 # ============================================================
 #  PASTE YOUR KEYS HERE — these are the only lines you touch
 # ============================================================
-POLYGON_API_KEY = "PASTE_YOUR_POLYGON_KEY_HERE"
-NTFY_CHANNEL    = "PASTE_YOUR_NTFY_CHANNEL_NAME_HERE"
+POLYGON_API_KEY = "bwmQrJUN3aF_2lL0iOSPsyObJNpLIZkX"
+NTFY_CHANNEL    = "my-market-alerts"
 # ============================================================
 
 POLYGON_BASE = "https://api.polygon.io"
