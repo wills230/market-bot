@@ -34,6 +34,7 @@ PRICE_SPIKE_PERCENT     = 3.0
 
 daily_alerts     = []
 recap_sent_today = False
+last_recap_date  = None
 
 
 def send_alert(title, message, priority="default"):
@@ -58,6 +59,13 @@ def send_alert(title, message, priority="default"):
 
 
 def send_daily_recap():
+    global recap_sent_today, last_recap_date
+    today = now_et().date()
+
+    # Don't send twice on the same day
+    if last_recap_date == today:
+        return
+
     print("\n[RECAP] Sending daily recap...")
     if not daily_alerts:
         send_alert(
@@ -75,6 +83,9 @@ def send_daily_recap():
             "\n".join(lines),
             priority="high"
         )
+
+    recap_sent_today = True
+    last_recap_date  = today
     daily_alerts.clear()
 
 
@@ -149,29 +160,53 @@ def check_sec_form4():
 
 
 def check_congress_trades():
-    try:
-        url    = "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
-        r      = requests.get(url, timeout=15)
-        trades = r.json()
-        cutoff  = now_et() - timedelta(days=7)
-        alerted = set()
-        for t in trades:
-            try:
-                date = EASTERN.localize(datetime.strptime(t.get("transaction_date", ""), "%Y-%m-%d"))
-                if date < cutoff:
-                    continue
-            except:
+    # Try primary source first, fall back to backup
+    urls = [
+        "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json",
+        "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
+    ]
+    trades = []
+    for url in urls:
+        try:
+            r = requests.get(url, timeout=15)
+            if r.status_code == 200 and len(r.content) > 100:
+                data = r.json()
+                if isinstance(data, list):
+                    trades.extend(data)
+        except Exception as e:
+            print(f"[CONGRESS] Skipping source: {e}")
+            continue
+
+    if not trades:
+        print("[CONGRESS] No data available from any source")
+        return
+
+    cutoff  = now_et() - timedelta(days=7)
+    alerted = set()
+
+    for t in trades:
+        try:
+            date = EASTERN.localize(
+                datetime.strptime(t.get("transaction_date", ""), "%Y-%m-%d")
+            )
+            if date < cutoff:
                 continue
-            ticker = t.get("ticker", "").upper().strip("$")
-            if ticker in WATCHLIST and ticker not in alerted:
-                alerted.add(ticker)
-                send_alert(
-                    f"CONGRESS TRADE: {ticker} — {t.get('type','Unknown')}",
-                    f"Congressional trade on watchlist stock\nTicker: {ticker}\nMember: {t.get('representative','Unknown')}\nType: {t.get('type','Unknown')}\nAmount: {t.get('amount','Unknown')}\nDate: {t.get('transaction_date','Unknown')}\nSource: https://housestockwatcher.com",
-                    priority="high"
-                )
-    except Exception as e:
-        print(f"[CONGRESS ERROR] {e}")
+        except:
+            continue
+
+        ticker = t.get("ticker", "").upper().strip("$")
+        if ticker in WATCHLIST and ticker not in alerted:
+            alerted.add(ticker)
+            send_alert(
+                f"CONGRESS TRADE: {ticker} — {t.get('type','Unknown')}",
+                f"Congressional trade on watchlist stock\nTicker: {ticker}\nMember: {t.get('representative', t.get('senator','Unknown'))}\nType: {t.get('type','Unknown')}\nAmount: {t.get('amount','Unknown')}\nDate: {t.get('transaction_date','Unknown')}\nSource: https://housestockwatcher.com",
+                priority="high"
+            )
+
+    if alerted:
+        print(f"[CONGRESS] Found trades for: {', '.join(alerted)}")
+    else:
+        print(f"[CONGRESS] No watchlist trades in last 7 days")
 
 
 def run_scan():
@@ -188,9 +223,8 @@ def run_scan():
 
 
 def is_market_hours():
-    now     = now_et()
-    weekday = now.weekday()
-    if weekday >= 5:
+    now = now_et()
+    if now.weekday() >= 5:
         return False
     if now.hour < 9 or (now.hour == 9 and now.minute < 30):
         return False
@@ -199,35 +233,42 @@ def is_market_hours():
     return True
 
 
-def is_recap_time():
-    now = now_et()
-    return now.hour == 15 and now.minute >= 55
+def should_send_recap():
+    """Send recap any time after 3:50pm on a weekday if not sent today"""
+    now  = now_et()
+    today = now.date()
+    if now.weekday() >= 5:
+        return False
+    if last_recap_date == today:
+        return False
+    # Send recap window: 3:50pm to 4:30pm
+    if now.hour == 15 and now.minute >= 50:
+        return True
+    if now.hour == 16 and now.minute <= 30:
+        return True
+    return False
 
 
 if __name__ == "__main__":
     print("Market Signal Bot starting up...")
     print(f"Watching {len(WATCHLIST)} tickers: {', '.join(WATCHLIST)}")
     print(f"Alerts going to ntfy channel: {NTFY_CHANNEL}")
-    print("Daily recap sends at 3:55pm ET every trading day\n")
+    print("Daily recap sends after 3:50pm ET every trading day\n")
 
     send_alert(
         "Market Bot Online",
-        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap at 3:55pm ET.",
+        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap after 3:50pm ET.",
         priority="default"
     )
 
     while True:
-        if is_market_hours():
-            if is_recap_time() and not recap_sent_today:
-                send_daily_recap()
-                recap_sent_today = True
-                time.sleep(60 * 10)
-            else:
-                if not is_recap_time():
-                    recap_sent_today = False
-                run_scan()
-                time.sleep(60 * 15)
+        # Check recap first — wider window so it never gets missed
+        if should_send_recap():
+            send_daily_recap()
+            time.sleep(60 * 5)
+        elif is_market_hours():
+            run_scan()
+            time.sleep(60 * 15)
         else:
-            recap_sent_today = False
             print(f"[{now_et().strftime('%I:%M %p ET')}] Market closed — waiting...")
             time.sleep(60 * 30)
