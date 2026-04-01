@@ -19,22 +19,68 @@ POLYGON_BASE = "https://api.polygon.io"
 NTFY_BASE    = "https://ntfy.sh"
 
 WATCHLIST = [
-    "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA",
-    "JPM","GS","BAC","XOM","CVX","LLY","UNH","BA",
-    "AMD","MRNA","PFE","NFLX","V","CRM","ORCL","QCOM","MU",
-    "BIIB","GILD","ABBV","REGN",
-    "MS","WFC","C","BLK",
-    "LMT","RTX","NOC","GD",
-    "PLTR","COIN"
+    # S&P 500 & Nasdaq 100 ETFs
+    "SPY", "QQQ", "IVV", "VOO",
+
+    # Mega cap tech
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
+    "ORCL", "CRM", "ADBE", "AMD", "QCOM", "MU", "AVGO", "INTC",
+    "NFLX", "PYPL", "CSCO",
+
+    # Financials
+    "JPM", "GS", "BAC", "MS", "WFC", "C", "BLK", "V", "MA", "AXP",
+
+    # Healthcare
+    "LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "MRNA",
+    "BIIB", "GILD", "REGN", "AMGN",
+
+    # Energy
+    "XOM", "CVX", "COP",
+
+    # Industrials / defense
+    "BA", "LMT", "RTX", "NOC", "GD", "CAT", "HON",
+
+    # Consumer
+    "HD", "MCD", "SBUX", "NKE", "COST",
+
+    # Other
+    "PLTR", "COIN",
 ]
 
 VOLUME_SPIKE_MULTIPLIER = 2.5
 PRICE_SPIKE_PERCENT     = 3.0
+SCAN_INTERVAL_SECONDS   = 60 * 20   # 20 min — gives Polygon free tier breathing room
+CLOSED_INTERVAL_SECONDS = 60 * 30   # 30 min when market is closed
 
 daily_alerts    = []
 last_recap_date = None
-alerted_today   = set()
+alerted_tickers = set()
 
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+def is_market_hours():
+    now = now_et()
+    if now.weekday() >= 5:
+        return False
+    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return market_open <= now <= market_close
+
+def is_recap_time():
+    now = now_et()
+    if now.weekday() >= 5:
+        return False
+    return now.hour >= 16
+
+def reset_daily_state():
+    global daily_alerts, alerted_tickers
+    daily_alerts    = []
+    alerted_tickers = set()
+    print(f"[{now_et().strftime('%I:%M %p ET')}] Daily state reset.")
+
+
+# ── Notifications ─────────────────────────────────────────────────────────────
 
 def send_alert(title, message, priority="default"):
     try:
@@ -84,19 +130,10 @@ def send_daily_recap():
         )
 
     last_recap_date = today
-    daily_alerts.clear()
-    alerted_today.clear()
+    reset_daily_state()
 
 
-def is_market_hours():
-    now  = now_et()
-    # Monday=0 … Friday=4
-    if now.weekday() >= 5:
-        return False
-    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
-    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
-    return market_open <= now <= market_close
-
+# ── Market scanning ───────────────────────────────────────────────────────────
 
 def get_stock_snapshot(ticker):
     try:
@@ -119,10 +156,6 @@ def get_stock_snapshot(ticker):
 
 
 def check_ticker(ticker):
-    # Only alert once per ticker per day
-    if ticker in alerted_today:
-        return
-
     snap = get_stock_snapshot(ticker)
     if not snap:
         return
@@ -132,63 +165,65 @@ def check_ticker(ticker):
     signals    = []
 
     if vol_ratio >= VOLUME_SPIKE_MULTIPLIER:
-        signals.append(f"Volume {vol_ratio:.1f}x avg")
+        signals.append(f"Volume {vol_ratio:.1f}x average")
     if change_pct >= PRICE_SPIKE_PERCENT:
         direction = "UP" if snap["change_pct"] > 0 else "DOWN"
         signals.append(f"Price {direction} {change_pct:.1f}%")
 
     if signals:
-        alerted_today.add(ticker)
+        is_urgent = len(signals) >= 2
+        if ticker in alerted_tickers and not is_urgent:
+            return
+        alerted_tickers.add(ticker)
+
         title   = f"SIGNAL: {ticker} — {', '.join(signals)}"
         message = (
             f"{ticker} @ ${snap['price']:.2f}\n"
-            f"Change : {snap['change_pct']:+.2f}%\n"
-            f"Volume : {int(snap['volume']):,} ({vol_ratio:.1f}x avg)\n"
-            f"Signals: {', '.join(signals)}\n"
-            f"Time   : {now_et().strftime('%I:%M %p ET')}"
+            f"Change:  {snap['change_pct']:+.2f}%\n"
+            f"Volume:  {int(snap['volume']):,} ({vol_ratio:.1f}x avg)\n"
+            f"Signal:  {', '.join(signals)}\n"
+            f"Time:    {now_et().strftime('%I:%M %p ET')}"
         )
-        priority = "urgent" if len(signals) >= 2 else "high"
+        priority = "urgent" if is_urgent else "high"
         send_alert(title, message, priority)
 
 
 def run_scan():
-    now = now_et()
     print(f"\n{'='*50}")
-    print(f"  SCAN — {now.strftime('%I:%M %p ET')}")
-    for ticker in WATCHLIST:
+    print(f"  SCAN — {now_et().strftime('%I:%M %p ET')} [{len(WATCHLIST)} tickers]")
+    for i, ticker in enumerate(WATCHLIST, 1):
+        print(f"  [{i}/{len(WATCHLIST)}] {ticker}...")
         check_ticker(ticker)
-    print(f"  Done. Next scan in 15 minutes.")
+    print(f"  Done. Next scan in 20 minutes.")
 
+
+# ── Main loop ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("Market Signal Bot starting up...")
     print(f"Watching {len(WATCHLIST)} tickers")
     print(f"Alerts going to ntfy channel: {NTFY_CHANNEL}")
-    print("Daily recap sends at 4:00 PM ET every trading day\n")
+    print("Daily recap sends after 4:00 PM ET every trading day\n")
 
     send_alert(
         "Market Bot Online",
-        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap at 4:00 PM ET.",
+        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap after 4:00 PM ET.",
         priority="default"
     )
 
     while True:
-        now  = now_et()
-        today = now.date()
+        now = now_et()
 
-        # Reset alerted_today at start of each new day
-        if last_recap_date != today and now.hour < 9:
-            alerted_today.clear()
-
-        # Always check recap first — runs independently of market hours
-        # Triggers any scan between 4:00 PM and 4:30 PM if not sent yet
-        if (now.hour == 16 and now.minute <= 30) and last_recap_date != today:
+        if is_recap_time():
             send_daily_recap()
+            print(f"[{now.strftime('%I:%M %p ET')}] After hours — waiting 30 min...")
+            time.sleep(CLOSED_INTERVAL_SECONDS)
+            continue
 
-        # Scan during market hours
         if is_market_hours():
             run_scan()
-            time.sleep(60 * 15)
-        else:
-            print(f"[{now.strftime('%I:%M %p ET')}] Market closed — waiting...")
-            time.sleep(60 * 30)
+            time.sleep(SCAN_INTERVAL_SECONDS)
+            continue
+
+        print(f"[{now.strftime('%I:%M %p ET')}] Market closed — waiting 30 min...")
+        time.sleep(CLOSED_INTERVAL_SECONDS)
