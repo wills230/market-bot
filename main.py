@@ -1,6 +1,6 @@
 import requests
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 import pytz
 
 EASTERN = pytz.timezone("US/Eastern")
@@ -9,14 +9,13 @@ def now_et():
     return datetime.now(EASTERN)
 
 # ============================================================
-#  PASTE YOUR KEYS HERE — these are the only lines you touch
+#  YOUR KEYS
 # ============================================================
 POLYGON_API_KEY = "bwmQrJUN3aF_2lL0iOSPsyObJNpLIZkX"
 NTFY_CHANNEL    = "my-market-alerts"
 # ============================================================
 
 POLYGON_BASE = "https://api.polygon.io"
-EDGAR_BASE   = "https://efts.sec.gov"
 NTFY_BASE    = "https://ntfy.sh"
 
 WATCHLIST = [
@@ -32,9 +31,9 @@ WATCHLIST = [
 VOLUME_SPIKE_MULTIPLIER = 2.5
 PRICE_SPIKE_PERCENT     = 3.0
 
-daily_alerts     = []
-recap_sent_today = False
-last_recap_date  = None
+daily_alerts    = []
+last_recap_date = None
+alerted_today   = set()
 
 
 def send_alert(title, message, priority="default"):
@@ -43,9 +42,9 @@ def send_alert(title, message, priority="default"):
             f"{NTFY_BASE}/{NTFY_CHANNEL}",
             data=message.encode("utf-8"),
             headers={
-                "Title": title,
+                "Title":    title,
                 "Priority": priority,
-                "Tags": "chart_increasing"
+                "Tags":     "chart_increasing"
             },
             timeout=10
         )
@@ -59,34 +58,44 @@ def send_alert(title, message, priority="default"):
 
 
 def send_daily_recap():
-    global recap_sent_today, last_recap_date
+    global last_recap_date
     today = now_et().date()
 
-    # Don't send twice on the same day
     if last_recap_date == today:
         return
 
     print("\n[RECAP] Sending daily recap...")
+
     if not daily_alerts:
         send_alert(
             "Daily Recap — Quiet day",
-            "Bot ran all day and found no unusual signals. Markets were quiet today.",
+            "Bot ran all day. No unusual volume or price signals today.",
             priority="low"
         )
     else:
-        lines = [f"Signals caught today: {len(daily_alerts)}\n"]
+        lines = [f"Signals today: {len(daily_alerts)}\n"]
         for a in daily_alerts:
             lines.append(f"  {a['time']} — {a['title']}")
-        lines.append("\nCheck your earlier alerts for full details.")
+        lines.append("\nCheck earlier alerts for full details.")
         send_alert(
             f"Daily Recap — {len(daily_alerts)} signal(s) today",
             "\n".join(lines),
             priority="high"
         )
 
-    recap_sent_today = True
-    last_recap_date  = today
+    last_recap_date = today
     daily_alerts.clear()
+    alerted_today.clear()
+
+
+def is_market_hours():
+    now  = now_et()
+    # Monday=0 … Friday=4
+    if now.weekday() >= 5:
+        return False
+    market_open  = now.replace(hour=9,  minute=30, second=0, microsecond=0)
+    market_close = now.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return market_open <= now <= market_close
 
 
 def get_stock_snapshot(ticker):
@@ -109,166 +118,77 @@ def get_stock_snapshot(ticker):
         return None
 
 
-def check_volume_and_price(ticker):
+def check_ticker(ticker):
+    # Only alert once per ticker per day
+    if ticker in alerted_today:
+        return
+
     snap = get_stock_snapshot(ticker)
     if not snap:
         return
+
     vol_ratio  = snap["volume"] / max(snap["avg_volume"], 1)
     change_pct = abs(snap["change_pct"])
     signals    = []
+
     if vol_ratio >= VOLUME_SPIKE_MULTIPLIER:
-        signals.append(f"Volume {vol_ratio:.1f}x average")
+        signals.append(f"Volume {vol_ratio:.1f}x avg")
     if change_pct >= PRICE_SPIKE_PERCENT:
         direction = "UP" if snap["change_pct"] > 0 else "DOWN"
         signals.append(f"Price {direction} {change_pct:.1f}%")
+
     if signals:
+        alerted_today.add(ticker)
         title   = f"SIGNAL: {ticker} — {', '.join(signals)}"
         message = (
             f"{ticker} @ ${snap['price']:.2f}\n"
-            f"Change: {snap['change_pct']:+.2f}%\n"
-            f"Volume: {int(snap['volume']):,} ({vol_ratio:.1f}x avg)\n"
+            f"Change : {snap['change_pct']:+.2f}%\n"
+            f"Volume : {int(snap['volume']):,} ({vol_ratio:.1f}x avg)\n"
             f"Signals: {', '.join(signals)}\n"
-            f"Time: {now_et().strftime('%I:%M %p ET')}"
+            f"Time   : {now_et().strftime('%I:%M %p ET')}"
         )
         priority = "urgent" if len(signals) >= 2 else "high"
         send_alert(title, message, priority)
 
 
-def check_sec_form4():
-    try:
-        today = now_et().strftime("%Y-%m-%d")
-        url   = f"{EDGAR_BASE}/LATEST/search-index?q=%22form+4%22&dateRange=custom&startdt={today}&enddt={today}&forms=4"
-        r     = requests.get(url, headers={"User-Agent": "MarketBot contact@example.com"}, timeout=15)
-        data  = r.json()
-        hits  = data.get("hits", {}).get("hits", [])
-        if not hits:
-            print("[EDGAR] No new Form 4 filings found")
-            return
-        for hit in hits[:20]:
-            src         = hit.get("_source", {})
-            entity_name = src.get("entity_name", "Unknown")
-            filed_at    = src.get("file_date", today)
-            for ticker in WATCHLIST:
-                if ticker.lower() in entity_name.lower():
-                    send_alert(
-                        f"FORM 4 FILED: {ticker} insider activity",
-                        f"New SEC Form 4 filing detected\nCompany: {entity_name}\nFiled: {filed_at}\nView: https://www.sec.gov/cgi-bin/browse-edgar?action=getcompany&type=4\nTime: {now_et().strftime('%I:%M %p ET')}",
-                        priority="high"
-                    )
-    except Exception as e:
-        print(f"[EDGAR ERROR] {e}")
-
-
-def check_congress_trades():
-    # Try primary source first, fall back to backup
-    urls = [
-        "https://house-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json",
-        "https://senate-stock-watcher-data.s3-us-east-2.amazonaws.com/data/all_transactions.json"
-    ]
-    trades = []
-    for url in urls:
-        try:
-            r = requests.get(url, timeout=15)
-            if r.status_code == 200 and len(r.content) > 100:
-                data = r.json()
-                if isinstance(data, list):
-                    trades.extend(data)
-        except Exception as e:
-            print(f"[CONGRESS] Skipping source: {e}")
-            continue
-
-    if not trades:
-        print("[CONGRESS] No data available from any source")
-        return
-
-    cutoff  = now_et() - timedelta(days=7)
-    alerted = set()
-
-    for t in trades:
-        try:
-            date = EASTERN.localize(
-                datetime.strptime(t.get("transaction_date", ""), "%Y-%m-%d")
-            )
-            if date < cutoff:
-                continue
-        except:
-            continue
-
-        ticker = t.get("ticker", "").upper().strip("$")
-        if ticker in WATCHLIST and ticker not in alerted:
-            alerted.add(ticker)
-            send_alert(
-                f"CONGRESS TRADE: {ticker} — {t.get('type','Unknown')}",
-                f"Congressional trade on watchlist stock\nTicker: {ticker}\nMember: {t.get('representative', t.get('senator','Unknown'))}\nType: {t.get('type','Unknown')}\nAmount: {t.get('amount','Unknown')}\nDate: {t.get('transaction_date','Unknown')}\nSource: https://housestockwatcher.com",
-                priority="high"
-            )
-
-    if alerted:
-        print(f"[CONGRESS] Found trades for: {', '.join(alerted)}")
-    else:
-        print(f"[CONGRESS] No watchlist trades in last 7 days")
-
-
 def run_scan():
-    print(f"\n{'='*50}\n  SCAN — {now_et().strftime('%I:%M %p ET')}\n{'='*50}")
-    print(f"[1/3] Volume & price spikes ({len(WATCHLIST)} tickers)...")
-    for ticker in WATCHLIST:
-        check_volume_and_price(ticker)
-        time.sleep(0.5)
-    print("[2/3] SEC Form 4 filings...")
-    check_sec_form4()
-    print("[3/3] Congressional trades...")
-    check_congress_trades()
-    print("  Done. Next scan in 15 minutes.\n")
-
-
-def is_market_hours():
     now = now_et()
-    if now.weekday() >= 5:
-        return False
-    if now.hour < 9 or (now.hour == 9 and now.minute < 30):
-        return False
-    if now.hour >= 16:
-        return False
-    return True
-
-
-def should_send_recap():
-    """Send recap any time after 3:50pm on a weekday if not sent today"""
-    now  = now_et()
-    today = now.date()
-    if now.weekday() >= 5:
-        return False
-    if last_recap_date == today:
-        return False
-    # Send recap window: 3:50pm to 4:30pm
-    if now.hour == 15 and now.minute >= 50:
-        return True
-    if now.hour == 16 and now.minute <= 30:
-        return True
-    return False
+    print(f"\n{'='*50}")
+    print(f"  SCAN — {now.strftime('%I:%M %p ET')}")
+    for ticker in WATCHLIST:
+        check_ticker(ticker)
+    print(f"  Done. Next scan in 15 minutes.")
 
 
 if __name__ == "__main__":
     print("Market Signal Bot starting up...")
-    print(f"Watching {len(WATCHLIST)} tickers: {', '.join(WATCHLIST)}")
+    print(f"Watching {len(WATCHLIST)} tickers")
     print(f"Alerts going to ntfy channel: {NTFY_CHANNEL}")
-    print("Daily recap sends after 3:50pm ET every trading day\n")
+    print("Daily recap sends at 4:00 PM ET every trading day\n")
 
     send_alert(
         "Market Bot Online",
-        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap after 3:50pm ET.",
+        f"Scanner is live. Watching {len(WATCHLIST)} tickers.\nDaily recap at 4:00 PM ET.",
         priority="default"
     )
 
     while True:
-        # Check recap first — wider window so it never gets missed
-        if should_send_recap():
+        now  = now_et()
+        today = now.date()
+
+        # Reset alerted_today at start of each new day
+        if last_recap_date != today and now.hour < 9:
+            alerted_today.clear()
+
+        # Always check recap first — runs independently of market hours
+        # Triggers any scan between 4:00 PM and 4:30 PM if not sent yet
+        if (now.hour == 16 and now.minute <= 30) and last_recap_date != today:
             send_daily_recap()
-            time.sleep(60 * 5)
-        elif is_market_hours():
+
+        # Scan during market hours
+        if is_market_hours():
             run_scan()
             time.sleep(60 * 15)
         else:
-            print(f"[{now_et().strftime('%I:%M %p ET')}] Market closed — waiting...")
+            print(f"[{now.strftime('%I:%M %p ET')}] Market closed — waiting...")
             time.sleep(60 * 30)
