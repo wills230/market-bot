@@ -22,42 +22,40 @@ WATCHLIST = [
     # S&P 500 & Nasdaq 100 ETFs
     "SPY", "QQQ", "IVV", "VOO",
 
-    # Mega cap tech
+    # mega cap tech
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
     "ORCL", "CRM", "ADBE", "AMD", "QCOM", "MU", "AVGO", "INTC",
     "NFLX", "PYPL", "CSCO",
 
-    # Financials
+    # financials
     "JPM", "GS", "BAC", "MS", "WFC", "C", "BLK", "V", "MA", "AXP",
 
-    # Healthcare
+    # healthcare
     "LLY", "UNH", "JNJ", "ABBV", "MRK", "PFE", "MRNA",
     "BIIB", "GILD", "REGN", "AMGN",
 
-    # Energy
+    # energy
     "XOM", "CVX", "COP",
 
-    # Industrials / defense
+    # industrials / defense
     "BA", "LMT", "RTX", "NOC", "GD", "CAT", "HON",
 
-    # Consumer
+    # consumer
     "HD", "MCD", "SBUX", "NKE", "COST",
 
-    # Other
+    # other
     "PLTR", "COIN",
 ]
 
 VOLUME_SPIKE_MULTIPLIER = 2.5
 PRICE_SPIKE_PERCENT     = 3.0
-SCAN_INTERVAL_SECONDS   = 60 * 20   # 20 min — gives Polygon free tier breathing room
-CLOSED_INTERVAL_SECONDS = 60 * 30   # 30 min when market is closed
+SCAN_INTERVAL_SECONDS   = 60 * 20
+CLOSED_INTERVAL_SECONDS = 60 * 30
 
 daily_alerts    = []
 last_recap_date = None
 alerted_tickers = set()
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def is_market_hours():
     now = now_et()
@@ -80,15 +78,15 @@ def reset_daily_state():
     print(f"[{now_et().strftime('%I:%M %p ET')}] Daily state reset.")
 
 
-# ── Notifications ─────────────────────────────────────────────────────────────
-
 def send_alert(title, message, priority="default"):
     try:
+        title   = title.replace("\u2014", "-").replace("\u2013", "-")
+        message = message.replace("\u2014", "-").replace("\u2013", "-")
         requests.post(
             f"{NTFY_BASE}/{NTFY_CHANNEL}",
             data=message.encode("utf-8"),
             headers={
-                "Title":    title,
+                "Title":    title.encode("utf-8").decode("latin-1", errors="replace"),
                 "Priority": priority,
                 "Tags":     "chart_increasing"
             },
@@ -132,8 +130,6 @@ def send_daily_recap():
     last_recap_date = today
     reset_daily_state()
 
-
-# ── Market scanning ───────────────────────────────────────────────────────────
 
 def get_stock_snapshot(ticker):
     try:
@@ -189,15 +185,15 @@ def check_ticker(ticker):
 
 
 def run_scan():
+    now = now_et()
     print(f"\n{'='*50}")
-    print(f"  SCAN — {now_et().strftime('%I:%M %p ET')} [{len(WATCHLIST)} tickers]")
+    print(f"  SCAN — {now.strftime('%I:%M %p ET')} [{len(WATCHLIST)} tickers]")
     for i, ticker in enumerate(WATCHLIST, 1):
         print(f"  [{i}/{len(WATCHLIST)}] {ticker}...")
         check_ticker(ticker)
+        time.sleep(0.5)
     print(f"  Done. Next scan in 20 minutes.")
 
-
-# ── Main loop ─────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     print("Market Signal Bot starting up...")
