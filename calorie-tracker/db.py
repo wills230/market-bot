@@ -20,8 +20,12 @@ from flask import g
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 LOCAL_DB_PATH = os.path.join(BASE_DIR, "data", "calories.db")
 
-TURSO_URL = os.environ.get("TURSO_DATABASE_URL")
-TURSO_AUTH_TOKEN = os.environ.get("TURSO_AUTH_TOKEN")
+TURSO_URL = (os.environ.get("TURSO_DATABASE_URL") or "").strip()
+TURSO_AUTH_TOKEN = (os.environ.get("TURSO_AUTH_TOKEN") or "").strip()
+if TURSO_URL and "://" not in TURSO_URL:
+    # Someone pasted just the hostname (e.g. "my-db-user.turso.io") instead
+    # of the full libsql:// URL Turso shows - fix it up rather than crashing.
+    TURSO_URL = "libsql://" + TURSO_URL
 USE_TURSO = bool(TURSO_URL)
 
 _turso_client = None
