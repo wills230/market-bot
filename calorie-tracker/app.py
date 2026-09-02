@@ -1,103 +1,57 @@
 """
-Personal calorie tracker — runs locally, no account/login, no hosting.
+Personal calorie tracker. No account/login.
 
 Log meals three ways:
   - type in calories yourself
   - describe the meal in words and let Claude estimate it
   - upload a photo of the meal and let Claude estimate it
 
-Run with:  python app.py
-Then open: http://127.0.0.1:5000
+Storage is a local SQLite file by default, or a remote Turso database when
+TURSO_DATABASE_URL is set (see db.py) - used when this is deployed to a host
+without a permanent disk.
+
+Run locally with:  python app.py
+Then open:          http://127.0.0.1:5000
 """
 
 import base64
 import io
-import json
 import os
-import sqlite3
 import uuid
 from datetime import date, datetime, timedelta
 
 from dotenv import load_dotenv
-from flask import Flask, g, jsonify, redirect, render_template, request, url_for
+from flask import Flask, jsonify, redirect, render_template, request, url_for
 from PIL import Image
+
+import db
 
 load_dotenv()
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DB_PATH = os.path.join(BASE_DIR, "data", "calories.db")
 UPLOAD_DIR = os.path.join(BASE_DIR, "static", "uploads")
-os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ANTHROPIC_MODEL = os.environ.get("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
 
 app = Flask(__name__)
-
-
-# ---------------------------------------------------------------- database
-
-def get_db():
-    if "db" not in g:
-        g.db = sqlite3.connect(DB_PATH)
-        g.db.row_factory = sqlite3.Row
-    return g.db
-
-
-@app.teardown_appcontext
-def close_db(exception=None):
-    db = g.pop("db", None)
-    if db is not None:
-        db.close()
-
-
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS entries (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            entry_date TEXT NOT NULL,
-            entry_time TEXT NOT NULL,
-            description TEXT,
-            calories INTEGER NOT NULL,
-            protein_g REAL,
-            carbs_g REAL,
-            fat_g REAL,
-            source TEXT NOT NULL,
-            photo_path TEXT,
-            created_at TEXT NOT NULL
-        )
-        """
-    )
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
+app.teardown_appcontext(db.close_local)
 
 
 # ------------------------------------------------------------------ helpers
 
 def get_setting(key, default=None):
-    row = get_db().execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+    row = db.query_one("SELECT value FROM settings WHERE key = ?", (key,))
     return row["value"] if row else default
 
 
 def set_setting(key, value):
-    db = get_db()
     db.execute(
         "INSERT INTO settings (key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         (key, value),
     )
-    db.commit()
 
 
 def parse_date_arg(value):
@@ -175,10 +129,10 @@ def call_claude(content_blocks):
 def index():
     day = parse_date_arg(request.args.get("date"))
     day_str = day.isoformat()
-    entries = get_db().execute(
+    entries = db.query(
         "SELECT * FROM entries WHERE entry_date = ? ORDER BY entry_time ASC, id ASC",
         (day_str,),
-    ).fetchall()
+    )
     total_calories = sum(e["calories"] for e in entries)
     total_protein = sum(e["protein_g"] or 0 for e in entries)
     total_carbs = sum(e["carbs_g"] or 0 for e in entries)
@@ -211,7 +165,6 @@ def add_entry():
         v = f.get(name)
         return float(v) if v not in (None, "") else None
 
-    db = get_db()
     db.execute(
         """
         INSERT INTO entries
@@ -231,20 +184,17 @@ def add_entry():
             datetime.now().isoformat(timespec="seconds"),
         ),
     )
-    db.commit()
     return redirect(url_for("index", date=day_str))
 
 
 @app.route("/delete/<int:entry_id>", methods=["POST"])
 def delete_entry(entry_id):
-    db = get_db()
-    row = db.execute("SELECT photo_path FROM entries WHERE id = ?", (entry_id,)).fetchone()
+    row = db.query_one("SELECT photo_path FROM entries WHERE id = ?", (entry_id,))
     if row and row["photo_path"]:
         path = os.path.join(BASE_DIR, "static", row["photo_path"].lstrip("/"))
         if os.path.exists(path):
             os.remove(path)
     db.execute("DELETE FROM entries WHERE id = ?", (entry_id,))
-    db.commit()
     return redirect(request.referrer or url_for("index"))
 
 
@@ -314,7 +264,7 @@ def analyze_photo():
 
 @app.route("/history")
 def history():
-    rows = get_db().execute(
+    rows = db.query(
         """
         SELECT entry_date, SUM(calories) AS total_calories, COUNT(*) AS entry_count
         FROM entries
@@ -322,15 +272,22 @@ def history():
         ORDER BY entry_date DESC
         LIMIT 60
         """
-    ).fetchall()
+    )
     goal = get_setting("daily_goal")
     return render_template("history.html", rows=rows, goal=goal)
 
 
+with app.app_context():
+    db.init_db()
+
 if __name__ == "__main__":
-    init_db()
-    print("\nCalorie tracker running locally.")
-    print("Open http://127.0.0.1:5000 in your browser.\n")
-    app.run(host="127.0.0.1", port=5000, debug=True)
-else:
-    init_db()
+    # Running under a host (e.g. Render) sets PORT - bind to all interfaces then.
+    # Running on your own machine, stay on localhost only.
+    port = os.environ.get("PORT")
+    if port:
+        print(f"\nCalorie tracker starting on port {port}.\n")
+        app.run(host="0.0.0.0", port=int(port), debug=False)
+    else:
+        print("\nCalorie tracker running locally.")
+        print("Open http://127.0.0.1:5000 in your browser.\n")
+        app.run(host="127.0.0.1", port=5000, debug=True)

@@ -1,8 +1,8 @@
 # Calorie Tracker
 
-A small personal calorie tracker that runs on your own machine. No account,
-no hosting, no cloud database — just a local web page backed by a SQLite
-file.
+A small personal calorie tracker. Runs great on your own machine (no
+account, no hosting, just a local web page backed by SQLite), or can be
+deployed to a free host if you only have a phone — see "Deploying" below.
 
 Log meals three ways:
 - Type in calories yourself.
@@ -48,3 +48,25 @@ your machine in `calorie-tracker/data/calories.db` and
   per-day list.
 - Uploaded photos are resized before being sent to Claude, so even large
   phone photos are cheap/fast to analyze.
+
+## Deploying (e.g. if you only have a phone)
+
+This app can run on a free host like [Render](https://render.com) so you
+just open a link in your phone's browser instead of running a terminal.
+
+Two things to know about hosting it:
+
+1. **Root directory**: this app lives in the `calorie-tracker/` subfolder
+   of the repo, not the repo root. Point your host's "Root Directory" at
+   `calorie-tracker`.
+2. **Build/start commands**: build with `pip install -r requirements.txt`,
+   start with `gunicorn app:app`. Set the `PORT` env var if your host
+   doesn't set it automatically (Render does).
+3. **Storage**: a free host's disk usually doesn't survive redeploys or
+   restarts. Set `TURSO_DATABASE_URL` and `TURSO_AUTH_TOKEN` (see
+   `.env.example`) to use a free [Turso](https://turso.tech) database
+   instead, so your logged meals persist no matter what happens to the
+   hosting. Without those set, it falls back to a local SQLite file that
+   may get wiped on redeploy.
+4. Set `ANTHROPIC_API_KEY` as an environment variable on the host the same
+   way you'd put it in `.env` locally.

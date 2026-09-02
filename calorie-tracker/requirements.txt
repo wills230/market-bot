@@ -2,3 +2,5 @@ flask==3.0.3
 anthropic==0.40.0
 python-dotenv==1.0.1
 pillow==10.4.0
+gunicorn==22.0.0
+libsql-client==0.3.1
