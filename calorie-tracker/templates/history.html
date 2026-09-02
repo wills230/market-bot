@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calorie Tracker — History</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Calorie Tracker</h1>
+      <nav>
+        <a href="{{ url_for('index') }}">Today</a>
+        <a href="{{ url_for('history') }}">History</a>
+      </nav>
+    </header>
+
+    <section class="entries">
+      {% if not rows %}
+        <p class="empty">No history yet.</p>
+      {% endif %}
+      {% for r in rows %}
+        <a class="history-row" href="{{ url_for('index', date=r.entry_date) }}">
+          <span class="history-date">{{ r.entry_date }}</span>
+          <span class="history-count">{{ r.entry_count }} entr{{ 'y' if r.entry_count == 1 else 'ies' }}</span>
+          <span class="history-cals">
+            {{ r.total_calories }} kcal
+            {% if goal %} <span class="history-goal">/ {{ goal|int }}</span>{% endif %}
+          </span>
+        </a>
+      {% endfor %}
+    </section>
+  </div>
+</body>
+</html>

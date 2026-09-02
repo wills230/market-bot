@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Calorie Tracker</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Calorie Tracker</h1>
+      <nav>
+        <a href="{{ url_for('index') }}">Today</a>
+        <a href="{{ url_for('history') }}">History</a>
+      </nav>
+    </header>
+
+    <section class="day-nav">
+      <a href="{{ url_for('index', date=prev_day) }}">&larr; prev</a>
+      <span class="day-label">{{ day.strftime('%A, %B %-d') }}{% if is_today %} (today){% endif %}</span>
+      <a href="{{ url_for('index', date=next_day) }}">next &rarr;</a>
+    </section>
+
+    <section class="summary">
+      <div class="totals">
+        <div class="total-cals">{{ total_calories }} <span>kcal</span></div>
+        {% if goal %}
+          <div class="goal-bar">
+            <div class="goal-bar-fill" style="width: {{ [100, (total_calories / (goal|float) * 100) if (goal|float) > 0 else 0] | min }}%"></div>
+          </div>
+          <div class="goal-label">{{ total_calories }} / {{ goal|int }} kcal goal</div>
+        {% endif %}
+      </div>
+      <div class="macros">
+        <span>P {{ total_protein }}g</span>
+        <span>C {{ total_carbs }}g</span>
+        <span>F {{ total_fat }}g</span>
+      </div>
+      <form class="goal-form" action="{{ url_for('set_goal') }}" method="post">
+        <input type="number" name="daily_goal" placeholder="daily goal (kcal)" value="{{ goal or '' }}" min="0">
+        <button type="submit">Set goal</button>
+      </form>
+    </section>
+
+    {% if not has_api_key %}
+      <div class="notice">
+        No ANTHROPIC_API_KEY set — AI analysis is disabled. Manual entry still works.
+        Add a key to <code>calorie-tracker/.env</code> to turn it on.
+      </div>
+    {% endif %}
+
+    <section class="entries">
+      {% if not entries %}
+        <p class="empty">Nothing logged for this day yet.</p>
+      {% endif %}
+      {% for e in entries %}
+        <div class="entry">
+          {% if e.photo_path %}
+            <img class="thumb" src="{{ url_for('static', filename=e.photo_path) }}" alt="">
+          {% endif %}
+          <div class="entry-main">
+            <div class="entry-desc">{{ e.description or '(no description)' }}</div>
+            <div class="entry-meta">
+              {{ e.entry_time }} &middot; {{ e.calories }} kcal
+              {% if e.protein_g or e.carbs_g or e.fat_g %}
+                &middot; P {{ e.protein_g|round(1) if e.protein_g else 0 }}g
+                C {{ e.carbs_g|round(1) if e.carbs_g else 0 }}g
+                F {{ e.fat_g|round(1) if e.fat_g else 0 }}g
+              {% endif %}
+              &middot; <span class="source-tag">{{ e.source }}</span>
+            </div>
+          </div>
+          <form action="{{ url_for('delete_entry', entry_id=e.id) }}" method="post">
+            <button type="submit" class="delete-btn" title="Delete">&times;</button>
+          </form>
+        </div>
+      {% endfor %}
+    </section>
+
+    <section class="add-panel">
+      <div class="tabs">
+        <button class="tab-btn active" data-tab="manual">Manual</button>
+        <button class="tab-btn" data-tab="describe">Describe meal (AI)</button>
+        <button class="tab-btn" data-tab="photo">Photo (AI)</button>
+      </div>
+
+      <div class="tab-content" id="tab-manual">
+        <form action="{{ url_for('add_entry') }}" method="post">
+          <input type="hidden" name="entry_date" value="{{ day_str }}">
+          <input type="hidden" name="source" value="manual">
+          <input type="text" name="description" placeholder="What did you eat?">
+          <input type="number" name="calories" placeholder="calories" required min="0">
+          <div class="macro-row">
+            <input type="number" step="0.1" name="protein_g" placeholder="protein g">
+            <input type="number" step="0.1" name="carbs_g" placeholder="carbs g">
+            <input type="number" step="0.1" name="fat_g" placeholder="fat g">
+          </div>
+          <button type="submit">Add entry</button>
+        </form>
+      </div>
+
+      <div class="tab-content hidden" id="tab-describe">
+        <textarea id="describe-text" placeholder="e.g. two scrambled eggs, a slice of toast with butter, and a black coffee" {{ 'disabled' if not has_api_key }}></textarea>
+        <button id="describe-analyze-btn" type="button" {{ 'disabled' if not has_api_key }}>Analyze with AI</button>
+        <div id="describe-error" class="error hidden"></div>
+        <div id="describe-review" class="review hidden"></div>
+      </div>
+
+      <div class="tab-content hidden" id="tab-photo">
+        <input type="file" id="photo-file" accept="image/*" {{ 'disabled' if not has_api_key }}>
+        <input type="text" id="photo-caption" placeholder="optional caption (e.g. 'large portion')" {{ 'disabled' if not has_api_key }}>
+        <button id="photo-analyze-btn" type="button" {{ 'disabled' if not has_api_key }}>Analyze with AI</button>
+        <div id="photo-preview"></div>
+        <div id="photo-error" class="error hidden"></div>
+        <div id="photo-review" class="review hidden"></div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    window.ENTRY_DATE = {{ day_str|tojson }};
+  </script>
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
